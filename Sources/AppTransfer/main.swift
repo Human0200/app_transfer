@@ -806,12 +806,13 @@ struct ContentView: View {
                     .font(.subheadline)
             }
             Spacer()
-            diskSpaceSummary
-                .layoutPriority(1)
             Button { model.refresh() } label: {
                 Label("Обновить", systemImage: "arrow.clockwise")
             }
             .disabled(model.isBusy)
+            .frame(maxHeight: .infinity, alignment: .top)
+            diskSpaceSummary
+                .layoutPriority(1)
         }
         .padding(22)
     }
