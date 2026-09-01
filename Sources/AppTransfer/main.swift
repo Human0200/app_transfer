@@ -6,7 +6,7 @@ struct AppTransferApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
-                .frame(minWidth: 820, minHeight: 560)
+                .frame(minWidth: 1060, minHeight: 560)
         }
         .windowResizability(.contentSize)
     }
@@ -785,6 +785,7 @@ struct ContentView: View {
             }
             Spacer()
             diskSpaceSummary
+                .layoutPriority(1)
             Button { model.refresh() } label: {
                 Label("Обновить", systemImage: "arrow.clockwise")
             }
@@ -794,26 +795,26 @@ struct ContentView: View {
     }
 
     private var diskSpaceSummary: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Text("Диски")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 5) {
+                Image(systemName: "internaldrive")
+                    .foregroundStyle(Color.accentColor)
+                Text("Диски")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.primary)
+                Spacer(minLength: 8)
+            }
             if model.diskVolumes.isEmpty {
-                Text("Нет данных")
+                Text("Нет подключённых дисков")
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
             } else {
                 ForEach(model.diskVolumes.prefix(3)) { volume in
-                    VStack(alignment: .leading, spacing: 2) {
-                        HStack(spacing: 5) {
-                            Text(volume.name)
-                                .font(.caption2)
-                                .lineLimit(1)
-                            Spacer(minLength: 4)
-                            Text(volume.availableLabel)
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                        }
+                    HStack(spacing: 6) {
+                        Text(volume.name)
+                            .font(.caption2)
+                            .lineLimit(1)
+                            .frame(width: 78, alignment: .leading)
                         GeometryReader { proxy in
                             ZStack(alignment: .leading) {
                                 Capsule()
@@ -823,12 +824,24 @@ struct ContentView: View {
                                     .frame(width: proxy.size.width * volume.usageRatio)
                             }
                         }
-                        .frame(width: 150, height: 5)
+                        .frame(height: 6)
+                        Text(volume.availableLabel)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .frame(width: 58, alignment: .trailing)
                     }
                 }
             }
         }
-        .frame(width: 175, alignment: .leading)
+        .frame(width: 285, alignment: .leading)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(Color.secondary.opacity(0.1))
+        .clipShape(RoundedRectangle(cornerRadius: 7))
+        .overlay {
+            RoundedRectangle(cornerRadius: 7)
+                .stroke(Color.secondary.opacity(0.2), lineWidth: 1)
+        }
         .help("Свободное место на подключённых дисках")
     }
 
