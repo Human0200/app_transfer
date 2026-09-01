@@ -102,21 +102,3 @@ swift run
 и другие рабочие данные приложений. Перед удалением проверьте список и путь
 каждого выбранного элемента: некоторые приложения могут пересоздать кэш или
 потерять сохранённое состояние при следующем запуске.
-
-## GitHub Release
-
-Релиз можно собрать и опубликовать через GitHub CLI:
-
-```sh
-./Scripts/build-app.sh
-ditto -c -k --sequesterRsrc --keepParent \
-  "dist/App Transfer.app" "dist/App-Transfer-macOS.zip"
-gh release create v0.1.0 "dist/App-Transfer-macOS.zip" \
-  --title "App Transfer v0.1.0" \
-  --generate-notes
-```
-
-## Лицензия
-
-Проект распространяется без отдельного файла лицензии. Условия использования
-определяются владельцем репозитория.
