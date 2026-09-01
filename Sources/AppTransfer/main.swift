@@ -95,6 +95,9 @@ final class AppModel: ObservableObject {
     @Published var deleteAppsStatus = "Выберите приложение для удаления"
 
     private let fileManager = FileManager.default
+    let developerEmail = "ruant02@mail.ru"
+    let developerWebsite = "https://kwork.ru/user/ruant02"
+    let supportDetails = "5469490014195149"
 
     init() {
         volumes = scanVolumes()
@@ -748,16 +751,20 @@ struct ContentView: View {
                 }
             } else if selectedSection == .cleanup {
                 cleanupPanel
-            } else {
+            } else if selectedSection == .deleteApps {
                 deleteAppsPanel
+            } else {
+                aboutPanel
             }
             Divider()
             if selectedSection == .transfer {
                 footer
             } else if selectedSection == .cleanup {
                 cleanupFooter
-            } else {
+            } else if selectedSection == .deleteApps {
                 deleteAppsFooter
+            } else {
+                EmptyView()
             }
         }
         .background(Color(nsColor: .windowBackgroundColor))
@@ -1132,6 +1139,81 @@ struct ContentView: View {
         .padding(18)
     }
 
+    private var aboutPanel: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 22) {
+                HStack(spacing: 14) {
+                    Image(systemName: "arrow.triangle.2.circlepath")
+                        .font(.system(size: 34, weight: .semibold))
+                        .foregroundStyle(.tint)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("App Transfer")
+                            .font(.title.weight(.semibold))
+                        Text("Перенос, очистка и удаление приложений на macOS")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                Text("О приложении")
+                    .font(.title3.weight(.semibold))
+                Text("App Transfer помогает управлять приложениями и их данными: переносить приложения на другой диск с сохранением исходного пути, очищать кэши и временные файлы, а также полностью удалять приложения вместе с найденными остатками.")
+                    .fixedSize(horizontal: false, vertical: true)
+
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Разработчик")
+                        .font(.headline)
+                    aboutRow(title: "Имя", value: "Rusakoff")
+                    aboutRow(title: "Почта", value: model.developerEmail)
+                    HStack {
+                        Text("Сайт")
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Link("Kwork", destination: URL(string: model.developerWebsite)!)
+                    }
+                }
+                .padding(16)
+                .background(Color.secondary.opacity(0.08))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Помочь разработчику")
+                        .font(.headline)
+                    Text("Поддержать разработку можно переводом по реквизитам:")
+                        .foregroundStyle(.secondary)
+                    HStack {
+                        Text(model.supportDetails)
+                            .font(.body.monospacedDigit())
+                            .textSelection(.enabled)
+                        Spacer()
+                        Button {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(model.supportDetails, forType: .string)
+                        } label: {
+                            Label("Копировать", systemImage: "doc.on.doc")
+                        }
+                    }
+                }
+                .padding(16)
+                .background(Color.secondary.opacity(0.08))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+            }
+            .frame(maxWidth: 700, alignment: .leading)
+            .padding(30)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+
+    private func aboutRow(title: String, value: String) -> some View {
+        HStack {
+            Text(title)
+                .foregroundStyle(.secondary)
+            Spacer()
+            Text(value)
+                .textSelection(.enabled)
+        }
+    }
+
     private func emptyState(_ title: String, icon: String) -> some View {
         VStack(spacing: 10) {
             Spacer()
@@ -1150,6 +1232,7 @@ enum AppSection: String, CaseIterable, Identifiable {
     case transfer
     case cleanup
     case deleteApps
+    case about
 
     var id: String { rawValue }
 
@@ -1158,6 +1241,7 @@ enum AppSection: String, CaseIterable, Identifiable {
         case .transfer: return "Перенос"
         case .cleanup: return "Очистка"
         case .deleteApps: return "Удаление приложений"
+        case .about: return "О приложении"
         }
     }
 
@@ -1166,6 +1250,7 @@ enum AppSection: String, CaseIterable, Identifiable {
         case .transfer: return "arrow.right.circle"
         case .cleanup: return "trash"
         case .deleteApps: return "app.dashed"
+        case .about: return "info.circle"
         }
     }
 }
