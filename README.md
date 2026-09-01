@@ -38,6 +38,16 @@ swift run
 Результат появится в `dist/App Transfer.app`. Скрипт собирает release-бинарник,
 создаёт иконку `AppIcon.icns` и добавляет её в bundle приложения.
 
+По умолчанию bundle подписывается локальной ad-hoc подписью, чтобы структура
+приложения была корректной после упаковки. Для распространения без предупреждений
+Gatekeeper нужна собственная Apple Developer ID Application подпись и
+notarization:
+
+```sh
+CODESIGN_IDENTITY="Developer ID Application: Ваше имя (TEAMID)" \
+  ./Scripts/build-app.sh
+```
+
 ## Использование
 
 1. Нажмите `Источник` и выберите диск или папку, где находится объект.

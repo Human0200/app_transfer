@@ -5,6 +5,7 @@ ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 BUILD_DIR="$ROOT/.build/release"
 APP_DIR="$ROOT/dist/App Transfer.app"
 ICONSET_DIR="$ROOT/.build/AppIcon.iconset"
+CODESIGN_IDENTITY="${CODESIGN_IDENTITY:--}"
 
 swift build -c release
 rm -rf "$APP_DIR"
@@ -46,4 +47,6 @@ cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
 PLIST
 
 chmod +x "$APP_DIR/Contents/MacOS/AppTransfer"
+codesign --force --deep --sign "$CODESIGN_IDENTITY" --timestamp=none "$APP_DIR"
+codesign --verify --deep --strict --verbose=2 "$APP_DIR"
 echo "Built: $APP_DIR"
