@@ -51,6 +51,19 @@ struct CleanupItem: Identifiable, Hashable {
     }
 }
 
+struct InstalledApp: Identifiable, Hashable {
+    let id = UUID()
+    let url: URL
+    let name: String
+    let bundleIdentifier: String?
+    let size: Int64
+    let isProtected: Bool
+
+    var sizeLabel: String {
+        ByteCountFormatter.string(fromByteCount: size, countStyle: .file)
+    }
+}
+
 @MainActor
 final class AppModel: ObservableObject {
     @Published var items: [TransferItem] = []
@@ -69,6 +82,11 @@ final class AppModel: ObservableObject {
     @Published var isCleaning = false
     @Published var showCleanupConfirmation = false
     @Published var cleanupStatus = "Нажмите «Сканировать», чтобы найти кэши и временные файлы"
+    @Published var installedApps: [InstalledApp] = []
+    @Published var selectedApps = Set<InstalledApp.ID>()
+    @Published var isDeletingApps = false
+    @Published var showDeleteAppsConfirmation = false
+    @Published var deleteAppsStatus = "Выберите приложение для удаления"
 
     private let fileManager = FileManager.default
 
@@ -76,6 +94,7 @@ final class AppModel: ObservableObject {
         volumes = scanVolumes()
         selectedVolume = volumes.first(where: { $0.url.path == "/Volumes/CUSU256DOC" }) ?? volumes.first
         cleanupItems = scanCleanupItems()
+        installedApps = scanInstalledApps()
     }
 
     func refresh() {
@@ -89,6 +108,10 @@ final class AppModel: ObservableObject {
         cleanupItems = scanCleanupItems()
         selectedCleanupItems = selectedCleanupItems.filter { id in
             cleanupItems.contains { $0.id == id }
+        }
+        installedApps = scanInstalledApps()
+        selectedApps = selectedApps.filter { id in
+            installedApps.contains { $0.id == id }
         }
     }
 
@@ -197,6 +220,60 @@ final class AppModel: ObservableObject {
                     model.cleanupStatus = "Удалено: \(finalRemovedCount) элементов, \(ByteCountFormatter.string(fromByteCount: finalRemovedSize, countStyle: .file))"
                 } else {
                     model.cleanupStatus = "Удалено: \(finalRemovedCount), ошибок: \(finalErrors.count)"
+                    model.errorMessage = finalErrors.joined(separator: "\n")
+                    model.showError = true
+                }
+            }
+        }
+    }
+
+    func scanApps() {
+        guard !isBusy, !isCleaning, !isDeletingApps else { return }
+        installedApps = scanInstalledApps()
+        selectedApps = []
+        deleteAppsStatus = installedApps.isEmpty
+            ? "Установленные приложения не найдены"
+            : "Найдено приложений: \(installedApps.count)"
+    }
+
+    func requestDeleteApps() {
+        let selected = installedApps.filter { selectedApps.contains($0.id) && !$0.isProtected }
+        guard !selected.isEmpty else { return }
+        showDeleteAppsConfirmation = true
+    }
+
+    func deleteApps() {
+        let selected = installedApps.filter { selectedApps.contains($0.id) && !$0.isProtected }
+        guard !selected.isEmpty else { return }
+        showDeleteAppsConfirmation = false
+        isDeletingApps = true
+        deleteAppsStatus = "Перемещаю выбранные приложения в Корзину..."
+
+        let model = self
+        Task.detached(priority: .userInitiated) {
+            var deletedCount = 0
+            var errors: [String] = []
+
+            for app in selected {
+                do {
+                    try FileManager.default.trashItem(at: app.url, resultingItemURL: nil)
+                    deletedCount += 1
+                } catch {
+                    errors.append("\(app.name): \(error.localizedDescription)")
+                }
+            }
+
+            let finalDeletedCount = deletedCount
+            let finalErrors = errors
+            await MainActor.run {
+                model.isDeletingApps = false
+                model.installedApps = model.scanInstalledApps()
+                model.selectedApps = []
+                model.cleanupItems = model.scanCleanupItems()
+                if finalErrors.isEmpty {
+                    model.deleteAppsStatus = "В Корзину перемещено: \(finalDeletedCount)"
+                } else {
+                    model.deleteAppsStatus = "Удалено: \(finalDeletedCount), ошибок: \(finalErrors.count)"
                     model.errorMessage = finalErrors.joined(separator: "\n")
                     model.showError = true
                 }
@@ -409,19 +486,34 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func installedApplications() -> [(name: String, bundleIdentifier: String?)] {
+    private func scanInstalledApps() -> [InstalledApp] {
+        installedApplications().compactMap { app in
+            guard let values = try? app.url.resourceValues(forKeys: [.isDirectoryKey]) else { return nil }
+            guard values.isDirectory == true else { return nil }
+            return InstalledApp(
+                url: app.url,
+                name: app.name,
+                bundleIdentifier: app.bundleIdentifier,
+                size: directorySize(app.url),
+                isProtected: app.url.path.hasPrefix("/System/Applications")
+            )
+        }.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    private func installedApplications() -> [(url: URL, name: String, bundleIdentifier: String?)] {
         let locations = [
             URL(fileURLWithPath: "/Applications"),
             fileManager.homeDirectoryForCurrentUser.appendingPathComponent("Applications"),
             URL(fileURLWithPath: "/System/Applications")
         ]
-        var result: [(name: String, bundleIdentifier: String?)] = []
+        var result: [(url: URL, name: String, bundleIdentifier: String?)] = []
         var seen = Set<String>()
         for location in locations {
             for url in directoryEntries(at: location) where url.pathExtension == "app" {
                 guard !seen.contains(url.path) else { continue }
                 seen.insert(url.path)
                 result.append((
+                    url: url,
                     name: url.deletingPathExtension().lastPathComponent,
                     bundleIdentifier: Bundle(url: url)?.bundleIdentifier
                 ))
@@ -581,12 +673,16 @@ struct ContentView: View {
         VStack(spacing: 0) {
             header
             Divider()
-            Picker("Раздел", selection: $selectedSection) {
+            Picker(selection: $selectedSection) {
                 ForEach(AppSection.allCases) { section in
                     Label(section.title, systemImage: section.icon).tag(section)
                 }
+            } label: {
+                EmptyView()
             }
             .pickerStyle(.segmented)
+            .labelsHidden()
+            .accessibilityLabel("Навигация")
             .padding(.horizontal, 20)
             .padding(.vertical, 12)
             Divider()
@@ -596,14 +692,18 @@ struct ContentView: View {
                     Divider()
                     destinationPanel
                 }
-            } else {
+            } else if selectedSection == .cleanup {
                 cleanupPanel
+            } else {
+                deleteAppsPanel
             }
             Divider()
             if selectedSection == .transfer {
                 footer
-            } else {
+            } else if selectedSection == .cleanup {
                 cleanupFooter
+            } else {
+                deleteAppsFooter
             }
         }
         .background(Color(nsColor: .windowBackgroundColor))
@@ -623,6 +723,12 @@ struct ContentView: View {
             Button("Отмена", role: .cancel) {}
         } message: {
             Text("Будут удалены только выбранные кэши, логи и сохранённые состояния. Документы, настройки и данные приложений не затрагиваются.")
+        }
+        .alert("Переместить приложения в Корзину?", isPresented: $model.showDeleteAppsConfirmation) {
+            Button("Переместить", role: .destructive) { model.deleteApps() }
+            Button("Отмена", role: .cancel) {}
+        } message: {
+            Text("Выбранные приложения будут перемещены в Корзину macOS. Их кэши и временные файлы останутся доступными во вкладке «Очистка».")
         }
     }
 
@@ -847,6 +953,78 @@ struct ContentView: View {
         .padding(18)
     }
 
+    private var deleteAppsPanel: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Удаление приложений")
+                        .font(.headline)
+                    Text("Приложения будут перемещены в Корзину macOS")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button { model.scanApps() } label: {
+                    Label("Сканировать", systemImage: "magnifyingglass")
+                }
+                .disabled(model.isBusy || model.isCleaning || model.isDeletingApps)
+            }
+
+            if model.installedApps.isEmpty {
+                emptyState("Нажмите «Сканировать», чтобы найти приложения", icon: "square.stack.3d.up")
+            } else {
+                List(model.installedApps, selection: $model.selectedApps) { app in
+                    HStack(spacing: 12) {
+                        Image(nsImage: NSWorkspace.shared.icon(forFile: app.url.path))
+                            .resizable()
+                            .frame(width: 36, height: 36)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(app.name).lineLimit(1)
+                            Text("\(app.sizeLabel) • \(app.url.deletingLastPathComponent().path)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                        Spacer()
+                        if app.isProtected {
+                            Text("Системное")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                    .tag(app.id)
+                    .opacity(app.isProtected ? 0.6 : 1)
+                }
+                .listStyle(.inset)
+            }
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+
+    private var deleteAppsFooter: some View {
+        VStack(spacing: 12) {
+            HStack {
+                Image(systemName: model.isDeletingApps ? "arrow.triangle.2.circlepath" : "info.circle")
+                    .foregroundStyle(.secondary)
+                Text(model.deleteAppsStatus)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button {
+                    model.requestDeleteApps()
+                } label: {
+                    Label("Удалить выбранное", systemImage: "trash")
+                }
+                .keyboardShortcut(.delete, modifiers: [.command])
+                .disabled(model.selectedApps.isEmpty || model.isBusy || model.isCleaning || model.isDeletingApps)
+                .controlSize(.large)
+            }
+        }
+        .padding(18)
+    }
+
     private func emptyState(_ title: String, icon: String) -> some View {
         VStack(spacing: 10) {
             Spacer()
@@ -864,6 +1042,7 @@ struct ContentView: View {
 enum AppSection: String, CaseIterable, Identifiable {
     case transfer
     case cleanup
+    case deleteApps
 
     var id: String { rawValue }
 
@@ -871,6 +1050,7 @@ enum AppSection: String, CaseIterable, Identifiable {
         switch self {
         case .transfer: return "Перенос"
         case .cleanup: return "Очистка"
+        case .deleteApps: return "Удаление приложений"
         }
     }
 
@@ -878,6 +1058,7 @@ enum AppSection: String, CaseIterable, Identifiable {
         switch self {
         case .transfer: return "arrow.right.circle"
         case .cleanup: return "trash"
+        case .deleteApps: return "app.dashed"
         }
     }
 }
