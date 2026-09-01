@@ -423,7 +423,12 @@ final class AppModel: ObservableObject {
         let locations = fileManager.mountedVolumeURLs(
             includingResourceValuesForKeys: keys,
             options: []
-        ) ?? [URL(fileURLWithPath: "/")]
+        )?.filter { url in
+            url.path == "/" || (
+                url.deletingLastPathComponent().path == "/Volumes" &&
+                url.path != "/Volumes/Macintosh HD"
+            )
+        } ?? [URL(fileURLWithPath: "/")]
         var seen = Set<String>()
 
         return locations.compactMap { url in
