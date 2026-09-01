@@ -252,29 +252,49 @@ final class AppModel: ObservableObject {
         let model = self
         Task.detached(priority: .userInitiated) {
             var deletedCount = 0
+            var deletedApps: [InstalledApp] = []
             var errors: [String] = []
 
             for app in selected {
                 do {
                     try FileManager.default.trashItem(at: app.url, resultingItemURL: nil)
                     deletedCount += 1
+                    deletedApps.append(app)
                 } catch {
                     errors.append("\(app.name): \(error.localizedDescription)")
                 }
             }
 
             let finalDeletedCount = deletedCount
+            let finalDeletedApps = deletedApps
             let finalErrors = errors
             await MainActor.run {
                 model.isDeletingApps = false
                 model.installedApps = model.scanInstalledApps()
                 model.selectedApps = []
+
+                var removedLeftovers = 0
+                var leftoverErrors: [String] = []
+                let cleanupItems = model.scanCleanupItems()
+                for app in finalDeletedApps {
+                    let leftovers = cleanupItems.filter { CleanupService.matches($0, app: app) }
+                    for leftover in leftovers {
+                        do {
+                            try CleanupService.remove(leftover)
+                            removedLeftovers += 1
+                        } catch {
+                            leftoverErrors.append("\(leftover.appName): \(error.localizedDescription)")
+                        }
+                    }
+                }
                 model.cleanupItems = model.scanCleanupItems()
-                if finalErrors.isEmpty {
-                    model.deleteAppsStatus = "В Корзину перемещено: \(finalDeletedCount)"
+
+                let allErrors = finalErrors + leftoverErrors
+                if allErrors.isEmpty {
+                    model.deleteAppsStatus = "Удалено приложений: \(finalDeletedCount), остатков: \(removedLeftovers)"
                 } else {
-                    model.deleteAppsStatus = "Удалено: \(finalDeletedCount), ошибок: \(finalErrors.count)"
-                    model.errorMessage = finalErrors.joined(separator: "\n")
+                    model.deleteAppsStatus = "Удалено приложений: \(finalDeletedCount), остатков: \(removedLeftovers), ошибок: \(allErrors.count)"
+                    model.errorMessage = allErrors.joined(separator: "\n")
                     model.showError = true
                 }
             }
@@ -577,6 +597,15 @@ enum TransferError: LocalizedError {
 }
 
 enum CleanupService {
+    static func matches(_ item: CleanupItem, app: InstalledApp) -> Bool {
+        if let itemIdentifier = item.bundleIdentifier,
+           let appIdentifier = app.bundleIdentifier,
+           itemIdentifier == appIdentifier {
+            return true
+        }
+        return item.appName.localizedCaseInsensitiveCompare(app.name) == .orderedSame
+    }
+
     static func remove(_ item: CleanupItem) throws {
         let homeLibrary = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library").standardizedFileURL.path
         let path = item.url.standardizedFileURL.path
@@ -728,7 +757,7 @@ struct ContentView: View {
             Button("Переместить", role: .destructive) { model.deleteApps() }
             Button("Отмена", role: .cancel) {}
         } message: {
-            Text("Выбранные приложения будут перемещены в Корзину macOS. Их кэши и временные файлы останутся доступными во вкладке «Очистка».")
+            Text("Выбранные приложения будут перемещены в Корзину macOS. Связанные кэши, логи и сохранённые состояния будут удалены автоматически.")
         }
     }
 
