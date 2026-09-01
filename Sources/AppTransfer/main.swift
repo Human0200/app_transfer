@@ -794,7 +794,7 @@ struct ContentView: View {
     }
 
     private var header: some View {
-        HStack {
+        HStack(alignment: .top) {
             Image(systemName: "arrow.triangle.2.circlepath")
                 .font(.system(size: 24, weight: .semibold))
                 .foregroundStyle(.tint)
@@ -810,7 +810,6 @@ struct ContentView: View {
                 Label("Обновить", systemImage: "arrow.clockwise")
             }
             .disabled(model.isBusy)
-            .frame(maxHeight: .infinity, alignment: .top)
             diskSpaceSummary
                 .layoutPriority(1)
         }
