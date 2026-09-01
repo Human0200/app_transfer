@@ -247,7 +247,7 @@ final class AppModel: ObservableObject {
         guard !selected.isEmpty else { return }
         showDeleteAppsConfirmation = false
         isDeletingApps = true
-        deleteAppsStatus = "Перемещаю выбранные приложения в Корзину..."
+        deleteAppsStatus = "Удаляю выбранные приложения и остатки..."
 
         let model = self
         Task.detached(priority: .userInitiated) {
@@ -257,7 +257,7 @@ final class AppModel: ObservableObject {
 
             for app in selected {
                 do {
-                    try FileManager.default.trashItem(at: app.url, resultingItemURL: nil)
+                    try FileManager.default.removeItem(at: app.url)
                     deletedCount += 1
                     deletedApps.append(app)
                 } catch {
@@ -753,11 +753,11 @@ struct ContentView: View {
         } message: {
             Text("Будут удалены только выбранные кэши, логи и сохранённые состояния. Документы, настройки и данные приложений не затрагиваются.")
         }
-        .alert("Переместить приложения в Корзину?", isPresented: $model.showDeleteAppsConfirmation) {
-            Button("Переместить", role: .destructive) { model.deleteApps() }
+        .alert("Удалить приложения безвозвратно?", isPresented: $model.showDeleteAppsConfirmation) {
+            Button("Удалить безвозвратно", role: .destructive) { model.deleteApps() }
             Button("Отмена", role: .cancel) {}
         } message: {
-            Text("Выбранные приложения будут перемещены в Корзину macOS. Связанные кэши, логи и сохранённые состояния будут удалены автоматически.")
+            Text("Приложения нельзя будет восстановить из Корзины. Связанные кэши, логи и сохранённые состояния будут удалены автоматически.")
         }
     }
 
@@ -988,7 +988,7 @@ struct ContentView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Удаление приложений")
                         .font(.headline)
-                    Text("Приложения будут перемещены в Корзину macOS")
+                    Text("Приложения и найденные остатки будут удалены безвозвратно")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
