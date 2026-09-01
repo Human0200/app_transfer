@@ -35,6 +35,11 @@ struct TransferVolume: Identifiable, Hashable {
     var availableLabel: String {
         ByteCountFormatter.string(fromByteCount: available, countStyle: .file)
     }
+
+    var usageRatio: Double {
+        guard total > 0 else { return 0 }
+        return min(max(Double(total - available) / Double(total), 0), 1)
+    }
 }
 
 struct CleanupItem: Identifiable, Hashable {
@@ -68,6 +73,7 @@ struct InstalledApp: Identifiable, Hashable {
 final class AppModel: ObservableObject {
     @Published var items: [TransferItem] = []
     @Published var volumes: [TransferVolume] = []
+    @Published var diskVolumes: [TransferVolume] = []
     @Published var sourceLocation: URL?
     @Published var selectedItem: TransferItem?
     @Published var selectedVolume: TransferVolume?
@@ -92,6 +98,7 @@ final class AppModel: ObservableObject {
 
     init() {
         volumes = scanVolumes()
+        diskVolumes = scanDiskVolumes()
         selectedVolume = volumes.first(where: { $0.url.path == "/Volumes/CUSU256DOC" }) ?? volumes.first
         cleanupItems = scanCleanupItems()
         installedApps = scanInstalledApps()
@@ -99,6 +106,7 @@ final class AppModel: ObservableObject {
 
     func refresh() {
         volumes = scanVolumes()
+        diskVolumes = scanDiskVolumes()
         selectedVolume = selectedVolume.flatMap { current in
             volumes.first(where: { $0.url == current.url })
         } ?? volumes.first(where: { $0.url.path == "/Volumes/CUSU256DOC" }) ?? volumes.first
@@ -402,19 +410,21 @@ final class AppModel: ObservableObject {
     }
 
     private func scanVolumes() -> [TransferVolume] {
-        guard let entries = try? fileManager.contentsOfDirectory(
-            at: URL(fileURLWithPath: "/Volumes"),
-            includingPropertiesForKeys: [.volumeNameKey, .volumeTotalCapacityKey, .volumeAvailableCapacityKey],
-            options: [.skipsHiddenFiles]
-        ) else { return [] }
+        scanDiskVolumes().filter { $0.url.path != "/" }
+    }
 
-        return entries.compactMap { url in
-            guard url.path != "/Volumes/Macintosh HD",
+    private func scanDiskVolumes() -> [TransferVolume] {
+        let locations = [URL(fileURLWithPath: "/")] + directoryEntries(at: URL(fileURLWithPath: "/Volumes"))
+        var seen = Set<String>()
+
+        return locations.compactMap { url in
+            guard !seen.contains(url.path),
                   let values = try? url.resourceValues(forKeys: [.volumeNameKey, .volumeTotalCapacityKey, .volumeAvailableCapacityKey]),
                   let available = values.volumeAvailableCapacity else { return nil }
+            seen.insert(url.path)
             return TransferVolume(
                 url: url,
-                name: values.volumeName ?? url.lastPathComponent,
+                name: values.volumeName ?? (url.path == "/" ? "Macintosh HD" : url.lastPathComponent),
                 available: Int64(available),
                 total: Int64(values.volumeTotalCapacity ?? 0)
             )
@@ -774,12 +784,52 @@ struct ContentView: View {
                     .font(.subheadline)
             }
             Spacer()
+            diskSpaceSummary
             Button { model.refresh() } label: {
                 Label("Обновить", systemImage: "arrow.clockwise")
             }
             .disabled(model.isBusy)
         }
         .padding(22)
+    }
+
+    private var diskSpaceSummary: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text("Диски")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            if model.diskVolumes.isEmpty {
+                Text("Нет данных")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            } else {
+                ForEach(model.diskVolumes.prefix(3)) { volume in
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 5) {
+                            Text(volume.name)
+                                .font(.caption2)
+                                .lineLimit(1)
+                            Spacer(minLength: 4)
+                            Text(volume.availableLabel)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                        GeometryReader { proxy in
+                            ZStack(alignment: .leading) {
+                                Capsule()
+                                    .fill(Color.secondary.opacity(0.18))
+                                Capsule()
+                                    .fill(volume.usageRatio > 0.9 ? Color.orange : Color.accentColor)
+                                    .frame(width: proxy.size.width * volume.usageRatio)
+                            }
+                        }
+                        .frame(width: 150, height: 5)
+                    }
+                }
+            }
+        }
+        .frame(width: 175, alignment: .leading)
+        .help("Свободное место на подключённых дисках")
     }
 
     private var itemPanel: some View {
