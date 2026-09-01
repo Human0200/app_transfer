@@ -37,6 +37,20 @@ struct TransferVolume: Identifiable, Hashable {
     }
 }
 
+struct CleanupItem: Identifiable, Hashable {
+    let id = UUID()
+    let appName: String
+    let bundleIdentifier: String?
+    let url: URL
+    let kind: String
+    let size: Int64
+    let isOrphaned: Bool
+
+    var sizeLabel: String {
+        ByteCountFormatter.string(fromByteCount: size, countStyle: .file)
+    }
+}
+
 @MainActor
 final class AppModel: ObservableObject {
     @Published var items: [TransferItem] = []
@@ -50,12 +64,18 @@ final class AppModel: ObservableObject {
     @Published var showConfirmation = false
     @Published var showError = false
     @Published var errorMessage = ""
+    @Published var cleanupItems: [CleanupItem] = []
+    @Published var selectedCleanupItems = Set<CleanupItem.ID>()
+    @Published var isCleaning = false
+    @Published var showCleanupConfirmation = false
+    @Published var cleanupStatus = "Нажмите «Сканировать», чтобы найти кэши и временные файлы"
 
     private let fileManager = FileManager.default
 
     init() {
         volumes = scanVolumes()
         selectedVolume = volumes.first(where: { $0.url.path == "/Volumes/CUSU256DOC" }) ?? volumes.first
+        cleanupItems = scanCleanupItems()
     }
 
     func refresh() {
@@ -65,6 +85,10 @@ final class AppModel: ObservableObject {
         } ?? volumes.first(where: { $0.url.path == "/Volumes/CUSU256DOC" }) ?? volumes.first
         if let sourceLocation {
             items = scanItems(at: sourceLocation)
+        }
+        cleanupItems = scanCleanupItems()
+        selectedCleanupItems = selectedCleanupItems.filter { id in
+            cleanupItems.contains { $0.id == id }
         }
     }
 
@@ -122,6 +146,62 @@ final class AppModel: ObservableObject {
     func requestTransfer() {
         guard selectedItem != nil, selectedVolume != nil else { return }
         showConfirmation = true
+    }
+
+    func scanCleanup() {
+        guard !isBusy, !isCleaning else { return }
+        cleanupItems = scanCleanupItems()
+        selectedCleanupItems = []
+        let total = cleanupItems.reduce(Int64(0)) { $0 + $1.size }
+        cleanupStatus = cleanupItems.isEmpty
+            ? "Безопасных к удалению файлов не найдено"
+            : "Найдено: \(cleanupItems.count) элементов, \(ByteCountFormatter.string(fromByteCount: total, countStyle: .file))"
+    }
+
+    func requestCleanup() {
+        guard !selectedCleanupItems.isEmpty else { return }
+        showCleanupConfirmation = true
+    }
+
+    func cleanup() {
+        let selected = cleanupItems.filter { selectedCleanupItems.contains($0.id) }
+        guard !selected.isEmpty else { return }
+        showCleanupConfirmation = false
+        isCleaning = true
+        cleanupStatus = "Удаляю выбранные данные..."
+
+        let model = self
+        Task.detached(priority: .userInitiated) {
+            var removedCount = 0
+            var removedSize: Int64 = 0
+            var errors: [String] = []
+
+            for item in selected {
+                do {
+                    try CleanupService.remove(item)
+                    removedCount += 1
+                    removedSize += item.size
+                } catch {
+                    errors.append("\(item.appName): \(error.localizedDescription)")
+                }
+            }
+
+            let finalRemovedCount = removedCount
+            let finalRemovedSize = removedSize
+            let finalErrors = errors
+            await MainActor.run {
+                model.isCleaning = false
+                model.cleanupItems = model.scanCleanupItems()
+                model.selectedCleanupItems = []
+                if finalErrors.isEmpty {
+                    model.cleanupStatus = "Удалено: \(finalRemovedCount) элементов, \(ByteCountFormatter.string(fromByteCount: finalRemovedSize, countStyle: .file))"
+                } else {
+                    model.cleanupStatus = "Удалено: \(finalRemovedCount), ошибок: \(finalErrors.count)"
+                    model.errorMessage = finalErrors.joined(separator: "\n")
+                    model.showError = true
+                }
+            }
+        }
     }
 
     func transfer() {
@@ -244,6 +324,126 @@ final class AppModel: ObservableObject {
         }.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
+    private func scanCleanupItems() -> [CleanupItem] {
+        let installedApps = installedApplications()
+        let installedIdentifiers = Set(installedApps.compactMap(\.bundleIdentifier))
+        let homeLibrary = fileManager.homeDirectoryForCurrentUser.appendingPathComponent("Library")
+        var result: [CleanupItem] = []
+        var seenPaths = Set<String>()
+
+        func add(_ url: URL, appName: String, bundleIdentifier: String?, kind: String, isOrphaned: Bool) {
+            guard fileManager.fileExists(atPath: url.path),
+                  !seenPaths.contains(url.path),
+                  !isSymbolicLink(url) else { return }
+            let size = directorySize(url)
+            guard size > 0 else { return }
+            seenPaths.insert(url.path)
+            result.append(CleanupItem(
+                appName: appName,
+                bundleIdentifier: bundleIdentifier,
+                url: url,
+                kind: kind,
+                size: size,
+                isOrphaned: isOrphaned
+            ))
+        }
+
+        let cachesDirectory = homeLibrary.appendingPathComponent("Caches")
+        for url in directoryEntries(at: cachesDirectory) where url.hasDirectoryPath {
+            let identifier = url.lastPathComponent
+            let app = installedApps.first { $0.bundleIdentifier == identifier }
+            add(
+                url,
+                appName: app?.name ?? readableAppName(identifier),
+                bundleIdentifier: app?.bundleIdentifier ?? identifier,
+                kind: app == nil ? "Кэш удалённого приложения" : "Кэш приложения",
+                isOrphaned: !installedIdentifiers.contains(identifier)
+            )
+        }
+
+        let containersDirectory = homeLibrary.appendingPathComponent("Containers")
+        for container in directoryEntries(at: containersDirectory) where container.hasDirectoryPath {
+            let identifier = container.lastPathComponent
+            let cache = container.appendingPathComponent("Data/Library/Caches")
+            let app = installedApps.first { $0.bundleIdentifier == identifier }
+            add(
+                cache,
+                appName: app?.name ?? readableAppName(identifier),
+                bundleIdentifier: app?.bundleIdentifier ?? identifier,
+                kind: app == nil ? "Кэш удалённого приложения" : "Кэш sandbox-приложения",
+                isOrphaned: !installedIdentifiers.contains(identifier)
+            )
+        }
+
+        let savedStatesDirectory = homeLibrary.appendingPathComponent("Saved Application State")
+        for url in directoryEntries(at: savedStatesDirectory) where url.pathExtension == "savedState" {
+            let identifier = url.deletingPathExtension().lastPathComponent
+            let app = installedApps.first { $0.bundleIdentifier == identifier }
+            add(
+                url,
+                appName: app?.name ?? readableAppName(identifier),
+                bundleIdentifier: app?.bundleIdentifier ?? identifier,
+                kind: app == nil ? "Состояние удалённого приложения" : "Сохранённое состояние",
+                isOrphaned: !installedIdentifiers.contains(identifier)
+            )
+        }
+
+        let logsDirectory = homeLibrary.appendingPathComponent("Logs")
+        for url in directoryEntries(at: logsDirectory) where url.hasDirectoryPath {
+            let app = installedApps.first { $0.name.localizedCaseInsensitiveCompare(url.lastPathComponent) == .orderedSame }
+            add(
+                url,
+                appName: app?.name ?? url.lastPathComponent,
+                bundleIdentifier: app?.bundleIdentifier,
+                kind: "Логи приложения",
+                isOrphaned: app == nil
+            )
+        }
+
+        return result.sorted {
+            if $0.isOrphaned != $1.isOrphaned { return $0.isOrphaned }
+            if $0.appName != $1.appName {
+                return $0.appName.localizedCaseInsensitiveCompare($1.appName) == .orderedAscending
+            }
+            return $0.kind.localizedCaseInsensitiveCompare($1.kind) == .orderedAscending
+        }
+    }
+
+    private func installedApplications() -> [(name: String, bundleIdentifier: String?)] {
+        let locations = [
+            URL(fileURLWithPath: "/Applications"),
+            fileManager.homeDirectoryForCurrentUser.appendingPathComponent("Applications"),
+            URL(fileURLWithPath: "/System/Applications")
+        ]
+        var result: [(name: String, bundleIdentifier: String?)] = []
+        var seen = Set<String>()
+        for location in locations {
+            for url in directoryEntries(at: location) where url.pathExtension == "app" {
+                guard !seen.contains(url.path) else { continue }
+                seen.insert(url.path)
+                result.append((
+                    name: url.deletingPathExtension().lastPathComponent,
+                    bundleIdentifier: Bundle(url: url)?.bundleIdentifier
+                ))
+            }
+        }
+        return result
+    }
+
+    private func directoryEntries(at url: URL) -> [URL] {
+        (try? fileManager.contentsOfDirectory(at: url, includingPropertiesForKeys: [.isDirectoryKey], options: [])) ?? []
+    }
+
+    private func isSymbolicLink(_ url: URL) -> Bool {
+        guard let attributes = try? fileManager.attributesOfItem(atPath: url.path),
+              let type = attributes[.type] as? FileAttributeType else { return false }
+        return type == .typeSymbolicLink
+    }
+
+    private func readableAppName(_ identifier: String) -> String {
+        identifier.split(separator: ".").last.map(String.init) ?? identifier
+    }
+
     private func availableSpace(at url: URL) -> Int64 {
         let values = try? url.resourceValues(forKeys: [.volumeAvailableCapacityKey])
         return Int64(values?.volumeAvailableCapacity ?? 0)
@@ -281,6 +481,26 @@ enum TransferError: LocalizedError {
         case .verificationFailed: return "Проверка копии не прошла. Исходные данные не изменены."
         case .linkFailed(let message): return "Файлы скопированы, но ссылку создать не удалось: \(message)"
         }
+    }
+}
+
+enum CleanupService {
+    static func remove(_ item: CleanupItem) throws {
+        let homeLibrary = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library").standardizedFileURL.path
+        let path = item.url.standardizedFileURL.path
+        let allowedRoots = [
+            "\(homeLibrary)/Caches/",
+            "\(homeLibrary)/Containers/",
+            "\(homeLibrary)/Saved Application State/",
+            "\(homeLibrary)/Logs/"
+        ]
+        guard allowedRoots.contains(where: { path.hasPrefix($0) }) else {
+            throw NSError(domain: "AppTransferCleanup", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: "Путь не относится к разрешённым данным приложения."
+            ])
+        }
+        guard FileManager.default.fileExists(atPath: item.url.path) else { return }
+        try FileManager.default.removeItem(at: item.url)
     }
 }
 
@@ -355,18 +575,36 @@ enum TransferService {
 
 struct ContentView: View {
     @StateObject private var model = AppModel()
+    @State private var selectedSection = AppSection.transfer
 
     var body: some View {
         VStack(spacing: 0) {
             header
             Divider()
-            HStack(spacing: 0) {
-                itemPanel
-                Divider()
-                destinationPanel
+            Picker("Раздел", selection: $selectedSection) {
+                ForEach(AppSection.allCases) { section in
+                    Label(section.title, systemImage: section.icon).tag(section)
+                }
+            }
+            .pickerStyle(.segmented)
+            .padding(.horizontal, 20)
+            .padding(.vertical, 12)
+            Divider()
+            if selectedSection == .transfer {
+                HStack(spacing: 0) {
+                    itemPanel
+                    Divider()
+                    destinationPanel
+                }
+            } else {
+                cleanupPanel
             }
             Divider()
-            footer
+            if selectedSection == .transfer {
+                footer
+            } else {
+                cleanupFooter
+            }
         }
         .background(Color(nsColor: .windowBackgroundColor))
         .alert("Подтвердить перенос", isPresented: $model.showConfirmation) {
@@ -379,6 +617,12 @@ struct ContentView: View {
             Button("Понятно", role: .cancel) {}
         } message: {
             Text(model.errorMessage)
+        }
+        .alert("Удалить выбранные данные?", isPresented: $model.showCleanupConfirmation) {
+            Button("Удалить", role: .destructive) { model.cleanup() }
+            Button("Отмена", role: .cancel) {}
+        } message: {
+            Text("Будут удалены только выбранные кэши, логи и сохранённые состояния. Документы, настройки и данные приложений не затрагиваются.")
         }
     }
 
@@ -501,6 +745,60 @@ struct ContentView: View {
         .frame(minWidth: 390, maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
+    private var cleanupPanel: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Кэши и временные файлы")
+                        .font(.headline)
+                    Text("Выберите данные, которые можно удалить")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button { model.scanCleanup() } label: {
+                    Label("Сканировать", systemImage: "magnifyingglass")
+                }
+                .disabled(model.isBusy || model.isCleaning)
+            }
+
+            if model.cleanupItems.isEmpty {
+                emptyState("Нажмите «Сканировать», чтобы проверить данные", icon: "sparkle.magnifyingglass")
+            } else {
+                List(model.cleanupItems, selection: $model.selectedCleanupItems) { item in
+                    HStack(spacing: 12) {
+                        Image(systemName: item.isOrphaned ? "trash" : "shippingbox")
+                            .font(.title3)
+                            .foregroundStyle(item.isOrphaned ? Color.orange : Color.accentColor)
+                        VStack(alignment: .leading, spacing: 3) {
+                            HStack(spacing: 6) {
+                                Text(item.appName).lineLimit(1)
+                                if item.isOrphaned {
+                                    Text("Остаток")
+                                        .font(.caption2.weight(.medium))
+                                        .foregroundStyle(.orange)
+                                }
+                            }
+                            Text("\(item.kind) • \(item.sizeLabel)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Text(item.url.path)
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                                .lineLimit(1)
+                        }
+                        Spacer()
+                    }
+                    .padding(.vertical, 4)
+                    .tag(item.id)
+                }
+                .listStyle(.inset)
+            }
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+
     private var footer: some View {
         VStack(spacing: 12) {
             if model.isBusy {
@@ -527,6 +825,28 @@ struct ContentView: View {
         .padding(18)
     }
 
+    private var cleanupFooter: some View {
+        VStack(spacing: 12) {
+            HStack {
+                Image(systemName: model.isCleaning ? "arrow.triangle.2.circlepath" : "info.circle")
+                    .foregroundStyle(.secondary)
+                Text(model.cleanupStatus)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button {
+                    model.requestCleanup()
+                } label: {
+                    Label("Удалить выбранное", systemImage: "trash")
+                }
+                .keyboardShortcut(.delete, modifiers: [.command])
+                .disabled(model.selectedCleanupItems.isEmpty || model.isBusy || model.isCleaning)
+                .controlSize(.large)
+            }
+        }
+        .padding(18)
+    }
+
     private func emptyState(_ title: String, icon: String) -> some View {
         VStack(spacing: 10) {
             Spacer()
@@ -538,5 +858,26 @@ struct ContentView: View {
             Spacer()
         }
         .frame(maxWidth: .infinity)
+    }
+}
+
+enum AppSection: String, CaseIterable, Identifiable {
+    case transfer
+    case cleanup
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .transfer: return "Перенос"
+        case .cleanup: return "Очистка"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .transfer: return "arrow.right.circle"
+        case .cleanup: return "trash"
+        }
     }
 }
