@@ -695,16 +695,23 @@ enum TransferService {
             throw TransferError.verificationFailed
         }
 
-        progress("Создаю ссылку на старом месте...", 0.9)
+        progress("Заменяю исходный путь ссылкой...", 0.9)
         do {
-            try fm.removeItem(at: source)
-            try fm.createSymbolicLink(at: source, withDestinationURL: destination)
+            try replaceSourceWithLink(source: source, destination: destination, fileManager: fm)
         } catch {
-            try? fm.removeItem(at: destination)
-            throw TransferError.linkFailed(error.localizedDescription)
+            throw TransferError.linkFailed("Копия сохранена в \(destination.path), но исходный путь не удалось заменить ссылкой. \(error.localizedDescription)")
         }
         progress("Перенос завершён", 1)
         return destination
+    }
+
+    private static func replaceSourceWithLink(source: URL, destination: URL, fileManager: FileManager) throws {
+        do {
+            try fileManager.removeItem(at: source)
+            try fileManager.createSymbolicLink(at: source, withDestinationURL: destination)
+        } catch {
+            try PrivilegedFileService.replaceWithSymbolicLink(source: source, destination: destination)
+        }
     }
 
     private static func directorySize(_ url: URL, fileManager: FileManager) -> Int64 {
@@ -719,6 +726,48 @@ enum TransferService {
             total += Int64(values?.totalFileAllocatedSize ?? values?.fileSize ?? 0)
         }
         return total
+    }
+}
+
+enum PrivilegedFileService {
+    static func replaceWithSymbolicLink(source: URL, destination: URL) throws {
+        guard source.path != "/", !source.path.hasPrefix("/System/"),
+              destination.path != "/", !destination.path.hasPrefix("/System/") else {
+            throw NSError(domain: "AppTransferAuthorization", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: "Нельзя запрашивать права для системного пути."
+            ])
+        }
+
+        let process = Process()
+        let input = Pipe()
+        let output = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        process.arguments = ["-", source.path, destination.path]
+        process.standardInput = input
+        process.standardOutput = output
+        process.standardError = output
+
+        try process.run()
+        let script = """
+        on run argv
+            set sourcePath to item 1 of argv
+            set destinationPath to item 2 of argv
+            do shell script "/bin/rm -rf -- " & quoted form of sourcePath & " && /bin/ln -s -- " & quoted form of destinationPath & " " & quoted form of sourcePath with administrator privileges
+        end run
+        """
+        input.fileHandleForWriting.write(script.data(using: .utf8)!)
+        try input.fileHandleForWriting.close()
+        process.waitUntilExit()
+
+        guard process.terminationStatus == 0 else {
+            let message = String(
+                data: output.fileHandleForReading.readDataToEndOfFile(),
+                encoding: .utf8
+            )?.trimmingCharacters(in: .whitespacesAndNewlines)
+            throw NSError(domain: "AppTransferAuthorization", code: Int(process.terminationStatus), userInfo: [
+                NSLocalizedDescriptionKey: message?.isEmpty == false ? message! : "Права администратора не предоставлены."
+            ])
+        }
     }
 }
 
