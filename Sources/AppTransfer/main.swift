@@ -414,12 +414,22 @@ final class AppModel: ObservableObject {
     }
 
     private func scanDiskVolumes() -> [TransferVolume] {
-        let locations = [URL(fileURLWithPath: "/")] + directoryEntries(at: URL(fileURLWithPath: "/Volumes"))
+        let keys: [URLResourceKey] = [
+            .volumeNameKey,
+            .volumeTotalCapacityKey,
+            .volumeAvailableCapacityKey,
+            .volumeIsLocalKey
+        ]
+        let locations = fileManager.mountedVolumeURLs(
+            includingResourceValuesForKeys: keys,
+            options: []
+        ) ?? [URL(fileURLWithPath: "/")]
         var seen = Set<String>()
 
         return locations.compactMap { url in
             guard !seen.contains(url.path),
-                  let values = try? url.resourceValues(forKeys: [.volumeNameKey, .volumeTotalCapacityKey, .volumeAvailableCapacityKey]),
+                  let values = try? url.resourceValues(forKeys: Set(keys)),
+                  values.volumeIsLocal != false,
                   let available = values.volumeAvailableCapacity else { return nil }
             seen.insert(url.path)
             return TransferVolume(
